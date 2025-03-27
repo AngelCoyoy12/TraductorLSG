@@ -3,32 +3,31 @@ import numpy as np
 import tensorflow as tf
 import pickle
 import os
+import mediapipe as mp
 from config import RUTA_MODELO, RUTA_ETIQUETAS, TAMANO_IMAGEN
 
 
 class TraductorSenas:
     def __init__(self):
         try:
-            # Cargar modelo y etiquetas con verificación
-            if not os.path.exists(RUTA_MODELO):
-                raise FileNotFoundError(f"No se encontró el modelo en {RUTA_MODELO}")
-            if not os.path.exists(RUTA_ETIQUETAS):
-                raise FileNotFoundError(f"No se encontraron etiquetas en {RUTA_ETIQUETAS}")
-
+            # Cargar modelo y etiquetas
             self.modelo = tf.keras.models.load_model(RUTA_MODELO)
             with open(RUTA_ETIQUETAS, 'rb') as f:
                 self.letras = pickle.load(f)
 
-            # Iniciar cámara con reintentos
-            self.camara = None
-            for _ in range(3):  # 3 intentos
-                self.camara = cv2.VideoCapture(0)
-                if self.camara.isOpened():
-                    break
-                print("Reintentando abrir cámara...")
+            # Inicializar MediaPipe Hands
+            self.mp_hands = mp.solutions.hands
+            self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=1,
+                min_detection_confidence=0.7
+            )
+            self.mp_drawing = mp.solutions.drawing_utils
 
-            if not self.camara or not self.camara.isOpened():
-                raise RuntimeError("No se pudo abrir la cámara después de 3 intentos")
+            # Inicializar cámara
+            self.camara = cv2.VideoCapture(0)
+            if not self.camara.isOpened():
+                raise RuntimeError("No se pudo abrir la cámara")
 
             print("Traductor listo. Presiona 'q' para salir.")
 
@@ -38,80 +37,81 @@ class TraductorSenas:
             raise
 
     def procesar_fotograma(self, frame):
-        """Procesa un fotograma para detectar la letra"""
         try:
-            # Redimensionar y normalizar
-            img = cv2.resize(frame, TAMANO_IMAGEN)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = img / 255.0
-            img = np.expand_dims(img, axis=0)  # Añadir dimensión de batch
+            # Detectar manos
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(frame_rgb)
 
-            # Predecir
-            prediccion = self.modelo.predict(img, verbose=0)
-            indice = np.argmax(prediccion)
-            letra = self.letras[indice]
-            confianza = prediccion[0][indice]
+            # Dibujar landmarks si se detecta mano
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    self.mp_drawing.draw_landmarks(
+                        frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
 
-            return letra, float(confianza)
+                    # Obtener coordenadas para el cuadro delimitador
+                    h, w, _ = frame.shape
+                    x_coords = [lm.x * w for lm in hand_landmarks.landmark]
+                    y_coords = [lm.y * h for lm in hand_landmarks.landmark]
+                    x_min, x_max = int(min(x_coords)), int(max(x_coords))
+                    y_min, y_max = int(min(y_coords)), int(max(y_coords))
+
+                    # Dibujar cuadro delimitador (ampliado)
+                    padding = 20
+                    x_min = max(0, x_min - padding)
+                    y_min = max(0, y_min - padding)
+                    x_max = min(w, x_max + padding)
+                    y_max = min(h, y_max + padding)
+
+                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+
+                    # Recortar región de la mano y predecir
+                    hand_roi = frame[y_min:y_max, x_min:x_max]
+                    if hand_roi.size > 0:
+                        img = cv2.resize(hand_roi, TAMANO_IMAGEN)
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) / 255.0
+                        img = np.expand_dims(img, axis=0)
+
+                        prediccion = self.modelo.predict(img, verbose=0)
+                        letra = self.letras[np.argmax(prediccion)]
+                        confianza = np.max(prediccion)
+
+                        # Mostrar letra cerca del cuadro
+                        cv2.putText(frame, letra, (x_min, y_min - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        return letra
+
+            return None
 
         except Exception as e:
-            print(f"Error durante predicción: {str(e)}")
-            return None, 0.0
+            print(f"Error durante procesamiento: {str(e)}")
+            return None
 
     def ejecutar(self):
-        """Bucle principal del traductor"""
         try:
             while True:
-                try:
-                    # Capturar fotograma
-                    ret, frame = self.camara.read()
-                    if not ret:
-                        print("Error al capturar imagen - reintentando...")
-                        continue
-
-                    # Voltear horizontalmente (espejo)
-                    frame = cv2.flip(frame, 1)
-
-                    # Procesar y mostrar resultados
-                    letra, confianza = self.procesar_fotograma(frame)
-
-                    # Mostrar resultados
-                    if letra:
-                        cv2.putText(frame, f"Letra: {letra}", (20, 50),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                        cv2.putText(frame, f"Confianza: {confianza:.2f}", (20, 100),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                    # Mostrar ventana
-                    cv2.imshow("Traductor de Señas", frame)
-
-                    # Salir con 'q' o ESC
-                    key = cv2.waitKey(1)
-                    if key == ord('q') or key == 27:
-                        break
-
-                except KeyboardInterrupt:
-                    print("\nInterrupción por usuario detectada")
-                    break
-                except Exception as e:
-                    print(f"Error durante ejecución: {str(e)}")
+                ret, frame = self.camara.read()
+                if not ret:
                     continue
+
+                frame = cv2.flip(frame, 1)
+                _ = self.procesar_fotograma(frame)
+
+                cv2.imshow("Traductor", frame)
+
+                if cv2.waitKey(1) in [ord('q'), 27]:
+                    break
 
         finally:
             self.cerrar_recursos()
 
     def cerrar_recursos(self):
-        """Libera todos los recursos correctamente"""
-        if hasattr(self, 'camara') and self.camara and self.camara.isOpened():
+        if hasattr(self, 'camara') and self.camara.isOpened():
             self.camara.release()
+        if hasattr(self, 'hands'):
+            self.hands.close()
         cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    try:
-        traductor = TraductorSenas()
-        traductor.ejecutar()
-    except Exception as e:
-        print(f"\nError fatal: {str(e)}")
-    finally:
-        print("\nPrograma terminado correctamente")
+    traductor = TraductorSenas()
+    traductor.ejecutar()

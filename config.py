@@ -10,7 +10,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PORCENTAJE_PRUEBA = 0.2
 
 # Rutas importantes
-RUTA_IMAGENES = r"C:\Users\furio\OneDrive\Desktop\Nueva carpeta\logica\imagenes_entrenamiento"
+RUTA_IMAGENES = r"C:\Users\furio\OneDrive\Desktop\TRADUCTORLENGUAJESENAS\logica\imagenes_entrenamiento"
 RUTA_MODELO = os.path.join(BASE_DIR, "..", "modelo_entrenado", "modelo.h5")
 RUTA_ETIQUETAS = os.path.join(BASE_DIR, "..", "modelo_entrenado", "etiquetas.pkl")
 
